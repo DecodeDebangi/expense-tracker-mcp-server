@@ -3,8 +3,23 @@ import os
 import aiosqlite
 import json
 
-# Use local project directory for database storage
-DB_PATH = os.path.join(os.path.dirname(__file__), "expenses.db")
+import tempfile
+
+def get_db_path() -> str:
+    if "DB_PATH" in os.environ:
+        return os.environ["DB_PATH"]
+    
+    local_path = os.path.join(os.path.dirname(__file__), "expenses.db")
+    try:
+        test_path = os.path.join(os.path.dirname(__file__), ".write_test")
+        with open(test_path, "w") as f:
+            f.write("test")
+        os.remove(test_path)
+        return local_path
+    except (OSError, PermissionError):
+        return os.path.join(tempfile.gettempdir(), "expenses.db")
+
+DB_PATH = get_db_path()
 CATEGORIES_PATH = os.path.join(os.path.dirname(__file__), "categories.json")
 
 print(f"Database path: {DB_PATH}")
@@ -14,8 +29,12 @@ mcp = FastMCP("ExpenseTracker")
 def init_db() -> None:  # Keep as sync for initialization
     try:
         import sqlite3
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         with sqlite3.connect(DB_PATH) as c:
-            c.execute("PRAGMA journal_mode=WAL")
+            try:
+                c.execute("PRAGMA journal_mode=WAL")
+            except Exception:
+                pass
             c.execute("""
                 CREATE TABLE IF NOT EXISTS expenses(
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,13 +45,14 @@ def init_db() -> None:  # Keep as sync for initialization
                     note TEXT DEFAULT ''
                 )
             """)
-            print("Database initialized successfully")
+            print(f"Database initialized successfully at {DB_PATH}")
     except Exception as e:
         print(f"Database initialization error: {e}")
         raise
 
 # Initialize database synchronously at module load
 init_db()
+
 
 @mcp.tool()
 async def add_expense(
