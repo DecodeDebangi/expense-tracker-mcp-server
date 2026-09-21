@@ -139,6 +139,114 @@ async def summarize(start_date: str, end_date: str, category: str | None = None)
     except Exception as e:
         return {"status": "error", "message": f"Error summarizing expenses: {str(e)}"}
 
+@mcp.tool()
+async def delete_expense(expense_id: int) -> dict:
+    """Delete an expense entry from the database by its ID.
+
+    Args:
+        expense_id: Unique integer ID of the expense to delete.
+    """
+    try:
+        async with aiosqlite.connect(DB_PATH) as c:
+            cur = await c.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+            await c.commit()
+            if cur.rowcount == 0:
+                return {"status": "error", "message": f"No expense found with id {expense_id}"}
+            return {"status": "success", "message": f"Expense {expense_id} deleted successfully"}
+    except Exception as e:
+        return {"status": "error", "message": f"Error deleting expense: {str(e)}"}
+
+@mcp.tool()
+async def update_expense(
+    expense_id: int,
+    date: str | None = None,
+    amount: float | None = None,
+    category: str | None = None,
+    subcategory: str | None = None,
+    note: str | None = None
+) -> dict:
+    """Update one or more fields of an existing expense entry.
+
+    Args:
+        expense_id: ID of the expense to update.
+        date: Optional new date in YYYY-MM-DD format.
+        amount: Optional new cost amount.
+        category: Optional new category string.
+        subcategory: Optional new subcategory string.
+        note: Optional new note string.
+    """
+    fields = []
+    params = []
+
+    if date is not None:
+        fields.append("date = ?")
+        params.append(date)
+    if amount is not None:
+        fields.append("amount = ?")
+        params.append(amount)
+    if category is not None:
+        fields.append("category = ?")
+        params.append(category)
+    if subcategory is not None:
+        fields.append("subcategory = ?")
+        params.append(subcategory)
+    if note is not None:
+        fields.append("note = ?")
+        params.append(note)
+
+    if not fields:
+        return {"status": "error", "message": "No fields provided to update"}
+
+    params.append(expense_id)
+    query = f"UPDATE expenses SET {', '.join(fields)} WHERE id = ?"
+
+    try:
+        async with aiosqlite.connect(DB_PATH) as c:
+            cur = await c.execute(query, params)
+            await c.commit()
+            if cur.rowcount == 0:
+                return {"status": "error", "message": f"No expense found with id {expense_id}"}
+            return {"status": "success", "message": f"Expense {expense_id} updated successfully"}
+    except Exception as e:
+        return {"status": "error", "message": f"Error updating expense: {str(e)}"}
+
+@mcp.tool()
+async def bulk_add_expenses(expenses: list[dict]) -> dict:
+    """Bulk add multiple expense entries to the database in a single transaction.
+
+    Args:
+        expenses: A list of dict objects, each containing 'date', 'amount', 'category', and optionally 'subcategory' and 'note'.
+    """
+    if not expenses:
+        return {"status": "error", "message": "Expenses list cannot be empty"}
+
+    records = []
+    for item in expenses:
+        if "date" not in item or "amount" not in item or "category" not in item:
+            return {
+                "status": "error",
+                "message": f"Each expense item must contain 'date', 'amount', and 'category'. Missing in: {item}"
+            }
+        records.append((
+            str(item["date"]),
+            float(item["amount"]),
+            str(item["category"]),
+            str(item.get("subcategory", "")),
+            str(item.get("note", ""))
+        ))
+
+    try:
+        async with aiosqlite.connect(DB_PATH) as c:
+            await c.executemany(
+                "INSERT INTO expenses(date, amount, category, subcategory, note) VALUES (?,?,?,?,?)",
+                records
+            )
+            await c.commit()
+            return {"status": "success", "count": len(records), "message": f"Successfully added {len(records)} expenses"}
+    except Exception as e:
+        return {"status": "error", "message": f"Error bulk inserting expenses: {str(e)}"}
+
+
 @mcp.resource("expense:///categories", mime_type="application/json")
 def categories() -> str:
     """Returns available expense categories as JSON string."""
