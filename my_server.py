@@ -1,36 +1,47 @@
 from fastmcp import FastMCP
+from fastmcp.dependencies import CurrentHeaders, Depends
 import os
 import aiosqlite
 import json
-
+import sqlite3
 import tempfile
-
-def get_db_path() -> str:
-    if "DB_PATH" in os.environ:
-        return os.environ["DB_PATH"]
-    
-    local_path = os.path.join(os.path.dirname(__file__), "expenses.db")
-    try:
-        test_path = os.path.join(os.path.dirname(__file__), ".write_test")
-        with open(test_path, "w") as f:
-            f.write("test")
-        os.remove(test_path)
-        return local_path
-    except (OSError, PermissionError):
-        return os.path.join(tempfile.gettempdir(), "expenses.db")
-
-DB_PATH = get_db_path()
-CATEGORIES_PATH = os.path.join(os.path.dirname(__file__), "categories.json")
-
-print(f"Database path: {DB_PATH}")
 
 mcp = FastMCP("ExpenseTracker")
 
-def init_db() -> None:  # Keep as sync for initialization
+CATEGORIES_PATH = os.path.join(os.path.dirname(__file__), "categories.json")
+
+def get_current_user_id(headers: dict = CurrentHeaders()) -> str:
+    """Extracts user identity from HTTP headers ('x-user-id', 'x-consumer-username') or defaults to 'default_user'."""
+    user_id = headers.get("x-user-id") or headers.get("x-consumer-username") or "default_user"
+    return user_id
+
+def get_user_db_path(user_id: str) -> str:
+    """Returns an isolated SQLite database path for the given user ID."""
+    safe_user = "".join(c for c in user_id if c.isalnum() or c in ("-", "_")).lower() or "default"
+    
+    base_dir = os.environ.get("DB_DIR")
+    if not base_dir:
+        local_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "user_dbs"))
+        try:
+            os.makedirs(local_dir, exist_ok=True)
+            test_file = os.path.join(local_dir, ".write_test")
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
+            base_dir = local_dir
+        except (OSError, PermissionError):
+            base_dir = os.path.join(tempfile.gettempdir(), "user_dbs")
+
+    base_dir = os.path.abspath(base_dir)
+    os.makedirs(base_dir, exist_ok=True)
+    return os.path.join(base_dir, f"expenses_{safe_user}.db")
+
+def init_user_db(db_path: str) -> None:
+    """Ensures database schema exists for a specific user database."""
     try:
-        import sqlite3
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        with sqlite3.connect(DB_PATH) as c:
+        abs_path = os.path.abspath(db_path)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        with sqlite3.connect(abs_path) as c:
             try:
                 c.execute("PRAGMA journal_mode=WAL")
             except Exception:
@@ -45,13 +56,16 @@ def init_db() -> None:  # Keep as sync for initialization
                     note TEXT DEFAULT ''
                 )
             """)
-            print(f"Database initialized successfully at {DB_PATH}")
     except Exception as e:
-        print(f"Database initialization error: {e}")
+        print(f"Error initializing user DB at {db_path}: {e}")
         raise
 
-# Initialize database synchronously at module load
-init_db()
+
+async def get_user_db(user_id: str = Depends(get_current_user_id)) -> str:
+    """Dependency that initializes and returns the path to the current user's DB."""
+    db_path = get_user_db_path(user_id)
+    init_user_db(db_path)
+    return db_path
 
 
 @mcp.tool()
@@ -60,7 +74,8 @@ async def add_expense(
     amount: float,
     category: str,
     subcategory: str = "",
-    note: str = ""
+    note: str = "",
+    db_path: str = Depends(get_user_db)
 ) -> dict:
     """Add a new expense entry to the database.
 
@@ -72,7 +87,7 @@ async def add_expense(
         note: Optional extra notes.
     """
     try:
-        async with aiosqlite.connect(DB_PATH) as c:
+        async with aiosqlite.connect(db_path) as c:
             cur = await c.execute(
                 "INSERT INTO expenses(date, amount, category, subcategory, note) VALUES (?,?,?,?,?)",
                 (date, amount, category, subcategory, note)
@@ -86,7 +101,11 @@ async def add_expense(
         return {"status": "error", "message": f"Database error: {str(e)}"}
 
 @mcp.tool()
-async def list_expenses(start_date: str, end_date: str) -> list[dict] | dict:
+async def list_expenses(
+    start_date: str,
+    end_date: str,
+    db_path: str = Depends(get_user_db)
+) -> list[dict] | dict:
     """List expense entries within an inclusive date range (YYYY-MM-DD).
 
     Args:
@@ -94,7 +113,7 @@ async def list_expenses(start_date: str, end_date: str) -> list[dict] | dict:
         end_date: End date string (YYYY-MM-DD).
     """
     try:
-        async with aiosqlite.connect(DB_PATH) as c:
+        async with aiosqlite.connect(db_path) as c:
             cur = await c.execute(
                 """
                 SELECT id, date, amount, category, subcategory, note
@@ -110,7 +129,12 @@ async def list_expenses(start_date: str, end_date: str) -> list[dict] | dict:
         return {"status": "error", "message": f"Error listing expenses: {str(e)}"}
 
 @mcp.tool()
-async def summarize(start_date: str, end_date: str, category: str | None = None) -> list[dict] | dict:
+async def summarize(
+    start_date: str,
+    end_date: str,
+    category: str | None = None,
+    db_path: str = Depends(get_user_db)
+) -> list[dict] | dict:
     """Summarize expenses by category within an inclusive date range.
 
     Args:
@@ -119,7 +143,7 @@ async def summarize(start_date: str, end_date: str, category: str | None = None)
         category: Optional category filter.
     """
     try:
-        async with aiosqlite.connect(DB_PATH) as c:
+        async with aiosqlite.connect(db_path) as c:
             query = """
                 SELECT category, SUM(amount) AS total_amount, COUNT(*) as count
                 FROM expenses
@@ -140,14 +164,17 @@ async def summarize(start_date: str, end_date: str, category: str | None = None)
         return {"status": "error", "message": f"Error summarizing expenses: {str(e)}"}
 
 @mcp.tool()
-async def delete_expense(expense_id: int) -> dict:
+async def delete_expense(
+    expense_id: int,
+    db_path: str = Depends(get_user_db)
+) -> dict:
     """Delete an expense entry from the database by its ID.
 
     Args:
         expense_id: Unique integer ID of the expense to delete.
     """
     try:
-        async with aiosqlite.connect(DB_PATH) as c:
+        async with aiosqlite.connect(db_path) as c:
             cur = await c.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
             await c.commit()
             if cur.rowcount == 0:
@@ -163,7 +190,8 @@ async def update_expense(
     amount: float | None = None,
     category: str | None = None,
     subcategory: str | None = None,
-    note: str | None = None
+    note: str | None = None,
+    db_path: str = Depends(get_user_db)
 ) -> dict:
     """Update one or more fields of an existing expense entry.
 
@@ -201,7 +229,7 @@ async def update_expense(
     query = f"UPDATE expenses SET {', '.join(fields)} WHERE id = ?"
 
     try:
-        async with aiosqlite.connect(DB_PATH) as c:
+        async with aiosqlite.connect(db_path) as c:
             cur = await c.execute(query, params)
             await c.commit()
             if cur.rowcount == 0:
@@ -211,7 +239,10 @@ async def update_expense(
         return {"status": "error", "message": f"Error updating expense: {str(e)}"}
 
 @mcp.tool()
-async def bulk_add_expenses(expenses: list[dict]) -> dict:
+async def bulk_add_expenses(
+    expenses: list[dict],
+    db_path: str = Depends(get_user_db)
+) -> dict:
     """Bulk add multiple expense entries to the database in a single transaction.
 
     Args:
@@ -236,7 +267,7 @@ async def bulk_add_expenses(expenses: list[dict]) -> dict:
         ))
 
     try:
-        async with aiosqlite.connect(DB_PATH) as c:
+        async with aiosqlite.connect(db_path) as c:
             await c.executemany(
                 "INSERT INTO expenses(date, amount, category, subcategory, note) VALUES (?,?,?,?,?)",
                 records

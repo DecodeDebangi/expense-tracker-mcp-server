@@ -11,4 +11,6 @@ wheels/
 
 # Database
 *.db
+user_dbs/
+
 
