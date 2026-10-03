@@ -27,7 +27,8 @@ def get_supabase_client() -> Client:
     key = os.environ.get("SUPABASE_KEY")
     if not url or not key:
         raise ValueError(
-            "SUPABASE_URL and SUPABASE_KEY must be set in environment variables or .env file."
+            "Supabase database connection is not configured on the server. "
+            "Please set SUPABASE_URL and SUPABASE_KEY environment variables in your deployment settings."
         )
     return create_client(url, key)
 
@@ -63,6 +64,11 @@ def validate_user_id(user_id: str) -> str:
             f"Invalid user_id '{user_id}'. Must be 1-64 alphanumeric characters, underscores, or hyphens."
         )
     return user_id.lower()
+
+def resolve_user_id(param_user_id: Optional[str], header_user_id: str) -> str:
+    """Resolves user_id from explicit tool argument or HTTP header fallback."""
+    raw_user = (param_user_id or "").strip() or header_user_id
+    return validate_user_id(raw_user)
 
 def validate_date(date_str: str) -> str:
     """Validates that date is in YYYY-MM-DD format."""
@@ -101,7 +107,8 @@ async def add_expense(
     subcategory: str = "",
     note: str = "",
     currency: str = "USD",
-    user_id: str = Depends(get_current_user_id)
+    user_id: Optional[str] = None,
+    header_user_id: str = Depends(get_current_user_id)
 ) -> dict:
     """Add a new expense entry to Supabase database.
 
@@ -112,9 +119,10 @@ async def add_expense(
         subcategory: Optional subcategory description.
         note: Optional extra notes.
         currency: 3-letter currency code (default: 'USD').
+        user_id: Optional user identifier / username (e.g. 'debangi').
     """
     try:
-        valid_user = validate_user_id(user_id)
+        valid_user = resolve_user_id(user_id, header_user_id)
         valid_date = validate_date(date)
         valid_amount = validate_amount(amount)
         valid_cat, valid_subcat = validate_category(category, subcategory)
@@ -138,13 +146,13 @@ async def add_expense(
                 "status": "success",
                 "id": inserted.get("id"),
                 "expense": inserted,
-                "message": "Expense added successfully to Supabase"
+                "message": f"Expense added successfully for user '{valid_user}'"
             }
         return {"status": "error", "message": "Failed to insert expense entry into Supabase"}
     except ValueError as ve:
         return {"status": "error", "message": str(ve)}
     except Exception as e:
-        return {"status": "error", "message": f"Supabase API error: {str(e)}"}
+        return {"status": "error", "message": f"Supabase error: {str(e)}"}
 
 @mcp.tool()
 async def list_expenses(
@@ -153,7 +161,8 @@ async def list_expenses(
     category: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
-    user_id: str = Depends(get_current_user_id)
+    user_id: Optional[str] = None,
+    header_user_id: str = Depends(get_current_user_id)
 ) -> dict:
     """List expense entries from Supabase within an inclusive date range (YYYY-MM-DD) with pagination.
 
@@ -163,9 +172,10 @@ async def list_expenses(
         category: Optional category filter.
         limit: Maximum number of records to return (1-500, default: 100).
         offset: Offset for pagination (default: 0).
+        user_id: Optional user identifier / username (e.g. 'debangi').
     """
     try:
-        valid_user = validate_user_id(user_id)
+        valid_user = resolve_user_id(user_id, header_user_id)
         v_start = validate_date(start_date)
         v_end = validate_date(end_date)
         if v_start > v_end:
@@ -191,6 +201,7 @@ async def list_expenses(
 
         return {
             "status": "success",
+            "user_id": valid_user,
             "total_count": res.count if res.count is not None else len(res.data),
             "limit": limit,
             "offset": offset,
@@ -199,7 +210,7 @@ async def list_expenses(
     except ValueError as ve:
         return {"status": "error", "message": str(ve)}
     except Exception as e:
-        return {"status": "error", "message": f"Error listing expenses from Supabase: {str(e)}"}
+        return {"status": "error", "message": f"Error listing expenses: {str(e)}"}
 
 @mcp.tool()
 async def summarize(
@@ -207,7 +218,8 @@ async def summarize(
     end_date: str,
     category: Optional[str] = None,
     currency: Optional[str] = None,
-    user_id: str = Depends(get_current_user_id)
+    user_id: Optional[str] = None,
+    header_user_id: str = Depends(get_current_user_id)
 ) -> dict:
     """Summarize total expenses grouped by category and currency within an inclusive date range in Supabase.
 
@@ -216,9 +228,10 @@ async def summarize(
         end_date: End date string (YYYY-MM-DD).
         category: Optional category filter.
         currency: Optional currency filter (e.g. 'USD').
+        user_id: Optional user identifier / username (e.g. 'debangi').
     """
     try:
-        valid_user = validate_user_id(user_id)
+        valid_user = resolve_user_id(user_id, header_user_id)
         v_start = validate_date(start_date)
         v_end = validate_date(end_date)
         if v_start > v_end:
@@ -270,6 +283,7 @@ async def summarize(
 
         return {
             "status": "success",
+            "user_id": valid_user,
             "start_date": v_start,
             "end_date": v_end,
             "summary": summary_items,
@@ -278,7 +292,7 @@ async def summarize(
     except ValueError as ve:
         return {"status": "error", "message": str(ve)}
     except Exception as e:
-        return {"status": "error", "message": f"Error summarizing expenses in Supabase: {str(e)}"}
+        return {"status": "error", "message": f"Error summarizing expenses: {str(e)}"}
 
 @mcp.tool()
 async def update_expense(
@@ -289,7 +303,8 @@ async def update_expense(
     subcategory: Optional[str] = None,
     note: Optional[str] = None,
     currency: Optional[str] = None,
-    user_id: str = Depends(get_current_user_id)
+    user_id: Optional[str] = None,
+    header_user_id: str = Depends(get_current_user_id)
 ) -> dict:
     """Update one or more fields of an existing expense entry in Supabase.
 
@@ -301,9 +316,10 @@ async def update_expense(
         subcategory: Optional new subcategory string.
         note: Optional new note string.
         currency: Optional new 3-letter currency code (e.g. 'USD').
+        user_id: Optional user identifier / username (e.g. 'debangi').
     """
     try:
-        valid_user = validate_user_id(user_id)
+        valid_user = resolve_user_id(user_id, header_user_id)
         updates: Dict[str, Any] = {}
 
         if date is not None:
@@ -333,25 +349,27 @@ async def update_expense(
         )
 
         if res.data and len(res.data) > 0:
-            return {"status": "success", "message": f"Expense {expense_id} updated successfully in Supabase"}
-        return {"status": "error", "message": f"No expense found with id {expense_id} for current user"}
+            return {"status": "success", "message": f"Expense {expense_id} updated successfully"}
+        return {"status": "error", "message": f"No expense found with id {expense_id} for user '{valid_user}'"}
     except ValueError as ve:
         return {"status": "error", "message": str(ve)}
     except Exception as e:
-        return {"status": "error", "message": f"Error updating expense in Supabase: {str(e)}"}
+        return {"status": "error", "message": f"Error updating expense: {str(e)}"}
 
 @mcp.tool()
 async def delete_expense(
     expense_id: int,
-    user_id: str = Depends(get_current_user_id)
+    user_id: Optional[str] = None,
+    header_user_id: str = Depends(get_current_user_id)
 ) -> dict:
     """Delete an expense entry from Supabase by its ID.
 
     Args:
         expense_id: Unique integer ID of the expense to delete.
+        user_id: Optional user identifier / username (e.g. 'debangi').
     """
     try:
-        valid_user = validate_user_id(user_id)
+        valid_user = resolve_user_id(user_id, header_user_id)
         client = get_supabase_client()
         res = (
             client.table("expenses")
@@ -362,29 +380,31 @@ async def delete_expense(
         )
 
         if res.data and len(res.data) > 0:
-            return {"status": "success", "message": f"Expense {expense_id} deleted successfully from Supabase"}
-        return {"status": "error", "message": f"No expense found with id {expense_id} for current user"}
+            return {"status": "success", "message": f"Expense {expense_id} deleted successfully"}
+        return {"status": "error", "message": f"No expense found with id {expense_id} for user '{valid_user}'"}
     except ValueError as ve:
         return {"status": "error", "message": str(ve)}
     except Exception as e:
-        return {"status": "error", "message": f"Error deleting expense from Supabase: {str(e)}"}
+        return {"status": "error", "message": f"Error deleting expense: {str(e)}"}
 
 @mcp.tool()
 async def bulk_add_expenses(
     expenses: List[dict],
-    user_id: str = Depends(get_current_user_id)
+    user_id: Optional[str] = None,
+    header_user_id: str = Depends(get_current_user_id)
 ) -> dict:
     """Bulk add multiple expense entries to Supabase in a single request.
 
     Args:
         expenses: A list of dict objects, each containing 'date', 'amount', 'category', and optionally 'subcategory', 'note', and 'currency'.
+        user_id: Optional user identifier / username (e.g. 'debangi').
     """
     if not expenses:
         return {"status": "error", "message": "Expenses list cannot be empty"}
 
     records = []
     try:
-        valid_user = validate_user_id(user_id)
+        valid_user = resolve_user_id(user_id, header_user_id)
         for idx, item in enumerate(expenses):
             if "date" not in item or "amount" not in item or "category" not in item:
                 return {
@@ -411,11 +431,11 @@ async def bulk_add_expenses(
         client = get_supabase_client()
         res = client.table("expenses").insert(records).execute()
         count = len(res.data) if res.data else len(records)
-        return {"status": "success", "count": count, "message": f"Successfully added {count} expenses to Supabase"}
+        return {"status": "success", "count": count, "message": f"Successfully added {count} expenses for user '{valid_user}'"}
     except ValueError as ve:
         return {"status": "error", "message": str(ve)}
     except Exception as e:
-        return {"status": "error", "message": f"Error bulk inserting expenses into Supabase: {str(e)}"}
+        return {"status": "error", "message": f"Error bulk inserting expenses: {str(e)}"}
 
 @mcp.resource("expense:///categories", mime_type="application/json")
 def categories() -> str:
