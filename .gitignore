@@ -15,3 +15,7 @@ user_dbs/
 
 # Environment variables
 .env
+
+# IDE & Tool Metadata
+.kilo/
+.vscode/
