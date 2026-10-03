@@ -13,4 +13,5 @@ wheels/
 *.db
 user_dbs/
 
-
+# Environment variables
+.env

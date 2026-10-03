@@ -1,7 +1,7 @@
 [project]
 name = "expense-tracker-mcp-server"
 version = "0.1.0"
-description = "Add your description here"
+description = "Production-grade multi-user Expense Tracker MCP Server"
 readme = "README.md"
 authors = [
     { name = "Debangi", email = "debangiofficial@gmail.com" }
@@ -10,6 +10,14 @@ requires-python = ">=3.11"
 dependencies = [
     "aiosqlite>=0.22.1",
     "fastmcp>=4.0.5",
+    "python-dotenv>=1.2.3",
+    "supabase>=2.32.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
 ]
 
 [project.scripts]
@@ -18,3 +26,9 @@ expense-tracker-mcp-server = "expense_tracker_mcp_server:main"
 [build-system]
 requires = ["uv_build>=0.12.17,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
